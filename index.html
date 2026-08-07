@@ -321,6 +321,18 @@
     <div id="interp-body" style="margin-top:14px"></div>
   </section>
 
+  <!-- STUDENT MY REPORT -->
+  <section id="v-myreport" class="hidden">
+    <div class="study-head">
+      <button class="btn ghost sm" onclick="showStudentSets()">← 세트 목록</button>
+      <span class="tag">내 학습 리포트</span>
+    </div>
+    <div class="panel" style="margin-top:14px">
+      <div id="myreport-view"></div>
+      <div id="myreport-actions" class="row" style="gap:8px;margin-top:16px;flex-wrap:wrap;justify-content:center"></div>
+    </div>
+  </section>
+
   <!-- ADMIN GATE -->
   <section id="v-agate" class="hidden">
     <div class="panel" style="max-width:420px;margin:40px auto 0">
@@ -2830,7 +2842,7 @@ function fillGradeSelects(){
 }
 
 /* ============ navigation ============ */
-const VIEWS=['v-home','v-slogin','v-ssets','v-study','v-interp','v-agate','v-admin'];
+const VIEWS=['v-home','v-slogin','v-ssets','v-study','v-interp','v-myreport','v-agate','v-admin'];
 function show(id){ VIEWS.forEach(v=>document.getElementById(v).classList.toggle('hidden', v!==id)); window.scrollTo(0,0); }
 function goHome(){ stopSlide(); CUR={role:null,name:null,grade:null}; setWho(''); show('v-home'); }
 function setWho(t){ document.getElementById('whoami').textContent=t; }
@@ -2891,9 +2903,10 @@ function showStudentSets(){
   document.getElementById('ssets-today').textContent='오늘 '+todayStr();
   const sets=DB.sets.filter(s=>s.grade===CUR.grade);
   const box=document.getElementById('ssets-list');
-  if(!sets.length){ box.innerHTML='<div class="empty">아직 '+CUR.grade+' 단어장이 없어요. 선생님께 요청하세요!</div>'; return; }
+  const actions=studentActionBar();
+  if(!sets.length){ box.innerHTML=actions+'<div class="empty">아직 '+CUR.grade+' 단어장이 없어요. 선생님께 요청하세요!</div>'; return; }
   const t=todayStr(); const pr=DB.progress[sid()];
-  box.innerHTML=sets.map(s=>{
+  box.innerHTML=actions+sets.map(s=>{
     const rec=pr&&pr.days[t]&&pr.days[t][s.id];
     const done=rec?MODES.filter(m=>rec.modes[m.id]).length:0;
     const dots=MODES.map((m,i)=>`<div class="dot ${rec&&rec.modes[m.id]?'done':''}">${i+1}</div>`).join('');
@@ -2909,23 +2922,81 @@ function showStudentSets(){
   }).join('');
 }
 
+/* -------- 학생 통계 · 오답 복습 · 이어서 학습 -------- */
+function curRec(){ return (SESSION && SESSION.review) ? SESSION._rec : progRec(SESSION.setId); }
+function gatherMissed(){
+  const p=DB.progress[sid()]; if(!p||!p.days) return [];
+  const miss={};
+  Object.values(p.days).forEach(sets=>Object.values(sets).forEach(r=>{
+    if(r&&r.miss) Object.entries(r.miss).forEach(([w,n])=>miss[w]=(miss[w]||0)+n);
+  }));
+  return Object.entries(miss).sort((a,b)=>b[1]-a[1]);
+}
+function missedWordObjects(){
+  const missed=gatherMissed(); if(!missed.length) return [];
+  const wanted=new Set(missed.map(m=>m[0])); const found={};
+  const order=DB.sets.filter(s=>s.grade===CUR.grade).concat(DB.sets.filter(s=>s.grade!==CUR.grade));
+  for(const st of order) for(const w of st.words){ if(wanted.has(w.en)&&!found[w.en]) found[w.en]=w; }
+  return missed.map(m=>found[m[0]]).filter(Boolean);
+}
+function openMyReport(){
+  const R=computeReport(sid());
+  const view=document.getElementById('myreport-view');
+  const acts=document.getElementById('myreport-actions');
+  if(!R || (!R.studied && !R.topMiss.length && R.overallPct==null)){
+    view.innerHTML='<div class="empty">아직 학습 기록이 없어요. 단어를 학습하면 여기에서 정답률과 자주 틀린 단어를 볼 수 있어요.</div>';
+    acts.innerHTML=''; show('v-myreport'); return;
+  }
+  view.innerHTML=reportHTML(R);
+  const missedN=gatherMissed().length;
+  acts.innerHTML = missedN
+    ? '<button class="btn green" onclick="reviewMissed()">🔁 틀린 단어만 다시 풀기 ('+missedN+'개)</button>'
+    : '<span class="muted">최근 틀린 단어가 없어요. 아주 잘하고 있어요! 👍</span>';
+  show('v-myreport');
+}
+function reviewMissed(){
+  const words=missedWordObjects();
+  if(!words.length){ toast('틀린 단어 기록이 없어요.'); return; }
+  SESSION={ set:{id:'__review',name:'오답 복습 ('+words.length+'개)',grade:CUR.grade,words:words},
+            setId:'__review', review:true, start:Date.now(),
+            _rec:{studied:0,modes:{},timeSec:0,scores:{},miss:{}} };
+  show('v-study'); pickMode();
+}
+function continueStudy(){
+  const p=DB.progress[sid()]; const last=p&&p.lastSet;
+  const set=last&&DB.sets.find(s=>s.id===last&&s.grade===CUR.grade);
+  if(!set){ toast('이어서 학습할 최근 세트가 없어요. 아래에서 세트를 골라 시작해 보세요.'); return; }
+  openStudy(set.id);
+}
+function studentActionBar(){
+  const p=DB.progress[sid()];
+  const missedN=gatherMissed().length;
+  const hasLast=p&&p.lastSet&&DB.sets.some(s=>s.id===p.lastSet&&s.grade===CUR.grade);
+  const btns=[];
+  if(hasLast) btns.push('<button class="btn green sm" onclick="continueStudy()">▶ 이어서 학습하기</button>');
+  btns.push('<button class="btn ghost sm" onclick="openMyReport()">📊 내 리포트</button>');
+  if(missedN) btns.push('<button class="btn ghost sm" onclick="reviewMissed()">🔁 틀린 단어 복습 ('+missedN+')</button>');
+  return '<div class="row" style="gap:8px;margin-bottom:16px;flex-wrap:wrap">'+btns.join('')+'</div>';
+}
+
 /* -------- study runner -------- */
 function openStudy(setId){
   const set=DB.sets.find(s=>s.id===setId);
   if(!set||!set.words.length){ toast('단어가 없어요.'); return; }
   SESSION={ set, setId, mode:null, start:Date.now() };
+  if(DB.progress[sid()]){ DB.progress[sid()].lastSet=setId; saveProgress(); }
   show('v-study');
   pickMode();
 }
 function pickMode(){
-  const rec=progRec(SESSION.setId);
+  const rec=curRec();
   const next=MODES.find(m=>!rec.modes[m.id]);
   renderChips();
   if(!next){ renderAllDone(); return; }
   startMode(next.id);
 }
 function renderChips(){
-  const rec=progRec(SESSION.setId);
+  const rec=curRec();
   document.getElementById('study-chips').innerHTML=MODES.map((m,i)=>{
     const done=rec.modes[m.id], active=SESSION.mode===m.id;
     return `<button class="chip ${done?'done':''} ${active?'active':''}" onclick="jumpMode('${m.id}')" title="${esc(m.label)}(으)로 이동">${done?'✓':(i+1)} ${m.label}</button>`;
@@ -2963,7 +3034,7 @@ function finishMode(){
   const total=SESSION.queue.length;
   const pct=SESSION.mode==='card'?100:Math.round(SESSION.correct/total*100);
   const pass = SESSION.mode==='card' ? true : pct>=80;
-  const rec=progRec(SESSION.setId);
+  const rec=curRec();
   rec.studied=Math.max(rec.studied,total);
   rec.timeSec += Math.round((Date.now()-SESSION.start)/1000);
   SESSION.start=Date.now();
@@ -2972,7 +3043,7 @@ function finishMode(){
   rec.miss=rec.miss||{};
   SESSION.misses.forEach(en=>rec.miss[en]=(rec.miss[en]||0)+1);
   if(pass) rec.modes[SESSION.mode]=true;
-  saveProgress();
+  if(!SESSION.review) saveProgress();
   renderChips();
   const body=document.getElementById('study-body');
   document.getElementById('study-counter').textContent='';
@@ -2989,7 +3060,7 @@ function finishMode(){
   document.getElementById('study-prog').style.width=(MODES.filter(m=>rec.modes[m.id]).length/5*100)+'%';
 }
 function renderAllDone(){
-  const rec=progRec(SESSION.setId);
+  const rec=curRec();
   const mins=Math.max(1,Math.round(rec.timeSec/60));
   document.getElementById('study-counter').textContent='';
   document.getElementById('study-body').innerHTML=`<div class="card"><div class="result">
@@ -3515,12 +3586,12 @@ function popConfetti(){
 }
 function finishSlideshow(){
   stopSlide();
-  const rec=progRec(SESSION.setId);
+  const rec=curRec();
   rec.timeSec += Math.round((Date.now()-SESSION.start)/1000);
   SESSION.start=Date.now();
   rec.studied=Math.max(rec.studied, SESSION.queue.length);
   rec.modes.card=true;
-  saveProgress();
+  if(!SESSION.review) saveProgress();
   renderChips();
   popConfetti();
   document.getElementById('study-body').innerHTML=`<div class="card"><div class="result">
